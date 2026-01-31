@@ -33,3 +33,43 @@ jobs:
 
       - name: Show pushed image URI
         run: echo "Pushed: 116933115597.dkr.ecr.us-east-1.amazonaws.com/legal-case:latest"
+
+  create-apprunner:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Check or create App Runner service
+        env:
+          AWS_REGION: us-east-1
+        run: |
+          echo "Checking for existing App Runner service 'legalcase-service'..."
+          ARN=$(aws apprunner list-services --region $AWS_REGION --query "ServiceSummaryList[?ServiceName=='legalcase-service'] | [0].ServiceArn" --output text || echo "")
+          if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
+            echo "Service already exists: $ARN"
+            aws apprunner describe-service --service-arn "$ARN" --region $AWS_REGION --output json
+            exit 0
+          fi
+          echo "No existing service; attempting to create..."
+          set -o pipefail
+          if ! CREATE_OUT=$(aws apprunner create-service --service-name legalcase-service --source-configuration file://apprunner-source.json --instance-configuration file://apprunner-instance.json --region $AWS_REGION 2>&1); then
+            echo "App Runner create returned non-zero exit code. Output:";
+            echo "$CREATE_OUT";
+            exit 0
+          fi
+          echo "Create response:";
+          echo "$CREATE_OUT";
+          ARN=$(echo "$CREATE_OUT" | jq -r '.Service.ServiceArn' 2>/dev/null || true)
+          if [ -n "$ARN" ] && [ "$ARN" != "null" ]; then
+            echo "Waiting for service to be available..."
+            aws apprunner describe-service --service-arn "$ARN" --region $AWS_REGION --output json
+          fi
